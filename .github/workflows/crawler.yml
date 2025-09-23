@@ -1,0 +1,40 @@
+name: swiming-crawler
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'  # 2시간마다 실행
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Python 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 종속성 설치
+        run: |
+          pip install -r requirements.txt
+
+      - name: 크롤링 실행
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python crawler.py
+
+      - name: 변경사항 커밋
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/last_posts.json
+          git diff --staged --quiet || git commit -m "공지사항 데이터 업데이트 $(date)"
+          git push

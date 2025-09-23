@@ -1,13 +1,3 @@
-requests==2.31.0
+requests==2.32.4
 beautifulsoup4==4.12.2
 python-telegram-bot==20.5
-3단계: Python 크롤링 코드 작성
-crawler.py 파일 생성
-python
-import requests
-from bs4 import BeautifulSoup
-import json
-import os
-from datetime import datetime
-import asyncio
-from telegram import Bot
