@@ -22,7 +22,6 @@ async def send_telegram_message(message, use_html=True):
             parse_mode=parse_mode
         )
     except Exception as e:
-        # HTML 파싱 에러 시 일반 텍스트로 재시도
         if use_html:
             await send_telegram_message(message, use_html=False)
         else:
@@ -30,41 +29,79 @@ async def send_telegram_message(message, use_html=True):
 
 
 def crawl_notices():
+    # 세션 생성 (쿠키 및 연결 유지)
+    session = requests.Session()
+
+    # 더 상세한 헤더 설정
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1'
+    }
+
+    session.headers.update(headers)
+
     url = "https://www.jjss.or.kr/reserv/planweb/board/list.9is"
     params = {
         'contentUid': 'ff8080816c5f9de6016cd702efc70de1',
         'boardUid': 'ff8080816d4d1c03016d85eb2aff02cd',
-        'categoryUid2': 'C1'  # 완산수영장
+        'categoryUid2': 'C1'
     }
 
-    # User-Agent 헤더 추가 (크롤링 차단 방지)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    }
+    # 다중 재시도 로직
+    max_retries = 5
+    backoff_factor = 2
 
-    # 재시도 로직 추가
-    max_retries = 3
     for attempt in range(max_retries):
         try:
             print(f"크롤링 시도 {attempt + 1}/{max_retries}")
-            response = requests.get(
+
+            # 첫 번째 시도에서는 메인 페이지에 먼저 접근
+            if attempt == 0:
+                try:
+                    main_response = session.get(
+                        "https://www.jjss.or.kr",
+                        timeout=15
+                    )
+                    print(f"메인 페이지 접근 성공: {main_response.status_code}")
+                    time.sleep(1)
+                except:
+                    print("메인 페이지 접근 실패, 직접 접근 시도")
+
+            response = session.get(
                 url,
                 params=params,
-                headers=headers,
-                timeout=30  # 30초 타임아웃 설정
+                timeout=30,
+                allow_redirects=True
             )
-            response.raise_for_status()  # HTTP 에러 확인
+
+            response.raise_for_status()
+            print(f"크롤링 성공: {response.status_code}")
             break
-        except Exception as e:
-            print(f"시도 {attempt + 1} 실패: {e}")
-            if attempt == max_retries - 1:
-                raise e
-            time.sleep(2)  # 2초 대기 후 재시도
+
+        except requests.exceptions.Timeout:
+            print(f"타임아웃 발생 (시도 {attempt + 1})")
+        except requests.exceptions.ConnectionError:
+            print(f"연결 오류 발생 (시도 {attempt + 1})")
+        except requests.exceptions.RequestException as e:
+            print(f"요청 오류 발생 (시도 {attempt + 1}): {e}")
+
+        if attempt < max_retries - 1:
+            wait_time = backoff_factor ** attempt
+            print(f"{wait_time}초 대기 후 재시도...")
+            time.sleep(wait_time)
+        else:
+            raise Exception(f"모든 재시도 실패. 사이트 접근 불가능")
 
     soup = BeautifulSoup(response.content, 'html.parser')
 
@@ -86,14 +123,14 @@ def crawl_notices():
     for row in rows:
         cells = row.find_all('td')
         if len(cells) >= 6:
-            title_cell = cells[2]  # 제목 컬럼
+            title_cell = cells[2]
             title_link = title_cell.find('a')
             if title_link:
                 title_span = title_link.find('span')
                 if title_span:
                     title = title_span.get_text(strip=True)
                     link = 'https://www.jjss.or.kr/reserv/planweb/board/' + title_link['href']
-                    date = cells[4].get_text(strip=True)  # 등록일
+                    date = cells[4].get_text(strip=True)
 
                     # "신규" 또는 "초급" 키워드 필터링
                     if "신규" in title or "초급" in title:
@@ -104,23 +141,13 @@ def crawl_notices():
                         })
                         print(f"발견된 공지: {title}")
 
+    session.close()  # 세션 정리
     return notices
 
 
 async def main():
     try:
-        # 시작 메시지 전송
-        start_message = """
-🏊‍♀️ <b>완산수영장 신규/초급 알림봇 시작!</b>
-
-✅ 봇이 정상적으로 작동 중입니다.
-🔍 "신규" 또는 "초급" 키워드가 포함된 공지사항을 모니터링합니다.
-⏰ 2시간마다 확인합니다.
-
-📅 시작 시간: {}
-        """.format(datetime.now().strftime("%Y년 %m월 %d일 %H시 %M분")).strip()
-
-        await send_telegram_message(start_message)
+        print("완산수영장 알림봇 시작...")
 
         current_notices = crawl_notices()
 
@@ -149,9 +176,17 @@ async def main():
 🔗 <a href="{notice['link']}">공지사항 보기</a>
                 """.strip()
                 await send_telegram_message(message)
-                time.sleep(1)  # 메시지 간 1초 간격
+                time.sleep(1)
         else:
-            print("새로운 공지사항이 없습니다.")
+            # 정상 작동 확인 메시지 (선택사항)
+            success_message = f"""
+✅ <b>완산수영장 알림봇 정상 작동</b>
+
+🔍 신규/초급 공지사항 {len(current_notices)}개 확인 완료
+📅 확인 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🔄 다음 확인: 2시간 후
+            """.strip()
+            await send_telegram_message(success_message)
 
         # 현재 공지사항 저장
         os.makedirs('data', exist_ok=True)
@@ -160,10 +195,9 @@ async def main():
 
     except Exception as e:
         print(f"오류 발생: {e}")
-        # 오류 메시지를 일반 텍스트로 전송 (HTML 파싱 에러 방지)
         error_message = f"""❌ 완산수영장 알림봇 오류 발생
 
-오류 내용: {str(e)[:200]}
+오류: 사이트 접근 실패
 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 다음 실행 시 다시 시도됩니다."""
