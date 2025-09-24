@@ -10,6 +10,7 @@ import time
 # GitHub Secrets에서 환경변수 가져오기
 BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
+SCRAPER_API_KEY = os.environ['SCRAPER_API_KEY']
 
 
 async def send_telegram_message(message, use_html=True):
@@ -28,82 +29,54 @@ async def send_telegram_message(message, use_html=True):
             print(f"텔레그램 전송 실패: {e}")
 
 
-def crawl_notices():
-    # 세션 생성 (쿠키 및 연결 유지)
-    session = requests.Session()
+def crawl_notices_with_scraperapi():
+    """ScraperAPI를 사용한 크롤링"""
+    print("ScraperAPI를 사용하여 크롤링 시작...")
 
-    # 더 상세한 헤더 설정
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
+    # ScraperAPI 요청 파라미터 [web:229][web:231]
+    payload = {
+        'api_key': SCRAPER_API_KEY,
+        'url': 'https://www.jjss.or.kr/reserv/planweb/board/list.9is?contentUid=ff8080816c5f9de6016cd702efc70de1&boardUid=ff8080816d4d1c03016d85eb2aff02cd&categoryUid2=C1',
+        'country_code': 'kr',  # 한국 IP 사용 [web:231]
+        'follow_redirect': 'true',
+        'render': 'false',  # JavaScript 렌더링 불필요
+        'timeout': '30000',  # 30초 타임아웃
+        'retry_404': 'true'
     }
 
-    session.headers.update(headers)
+    try:
+        response = requests.get(
+            'https://api.scraperapi.com/',
+            params=payload,
+            timeout=60  # 충분한 타임아웃
+        )
 
-    url = "https://www.jjss.or.kr/reserv/planweb/board/list.9is"
-    params = {
-        'contentUid': 'ff8080816c5f9de6016cd702efc70de1',
-        'boardUid': 'ff8080816d4d1c03016d85eb2aff02cd',
-        'categoryUid2': 'C1'
-    }
+        print(f"ScraperAPI 응답 상태: {response.status_code}")
 
-    # 다중 재시도 로직
-    max_retries = 5
-    backoff_factor = 2
-
-    for attempt in range(max_retries):
-        try:
-            print(f"크롤링 시도 {attempt + 1}/{max_retries}")
-
-            # 첫 번째 시도에서는 메인 페이지에 먼저 접근
-            if attempt == 0:
-                try:
-                    main_response = session.get(
-                        "https://www.jjss.or.kr",
-                        timeout=15
-                    )
-                    print(f"메인 페이지 접근 성공: {main_response.status_code}")
-                    time.sleep(1)
-                except:
-                    print("메인 페이지 접근 실패, 직접 접근 시도")
-
-            response = session.get(
-                url,
-                params=params,
-                timeout=30,
-                allow_redirects=True
-            )
-
-            response.raise_for_status()
-            print(f"크롤링 성공: {response.status_code}")
-            break
-
-        except requests.exceptions.Timeout:
-            print(f"타임아웃 발생 (시도 {attempt + 1})")
-        except requests.exceptions.ConnectionError:
-            print(f"연결 오류 발생 (시도 {attempt + 1})")
-        except requests.exceptions.RequestException as e:
-            print(f"요청 오류 발생 (시도 {attempt + 1}): {e}")
-
-        if attempt < max_retries - 1:
-            wait_time = backoff_factor ** attempt
-            print(f"{wait_time}초 대기 후 재시도...")
-            time.sleep(wait_time)
+        if response.status_code == 200:
+            return parse_notices_from_html(response.text)
         else:
-            raise Exception(f"모든 재시도 실패. 사이트 접근 불가능")
+            print(f"ScraperAPI 오류: {response.status_code} - {response.text}")
+            raise Exception(f"ScraperAPI 요청 실패: {response.status_code}")
 
-    soup = BeautifulSoup(response.content, 'html.parser')
+    except Exception as e:
+        print(f"ScraperAPI 크롤링 실패: {e}")
+        raise
 
-    # 공지사항 테이블에서 데이터 추출
+
+def parse_notices_from_html(html_content):
+    """HTML에서 공지사항 추출"""
+    print("HTML 파싱 시작...")
+
+    soup = BeautifulSoup(html_content, 'html.parser')
     notices = []
-    table = soup.find('table', class_='bbsList bbs01')
 
+    # 공지사항 테이블 찾기
+    table = soup.find('table', class_='bbsList bbs01')
     if not table:
         print("공지사항 테이블을 찾을 수 없습니다.")
+        print("받은 HTML 일부:")
+        print(html_content[:500])
         return notices
 
     tbody = table.find('tbody')
@@ -112,43 +85,63 @@ def crawl_notices():
         return notices
 
     rows = tbody.find_all('tr')
+    print(f"총 {len(rows)}개 행 발견")
 
-    for row in rows:
+    for i, row in enumerate(rows):
         cells = row.find_all('td')
         if len(cells) >= 6:
-            title_cell = cells[2]
-            title_link = title_cell.find('a')
-            if title_link:
-                title_span = title_link.find('span')
-                if title_span:
-                    title = title_span.get_text(strip=True)
-                    link = 'https://www.jjss.or.kr/reserv/planweb/board/' + title_link['href']
-                    date = cells[4].get_text(strip=True)
+            try:
+                # 제목 추출
+                title_cell = cells[2]
+                title_link = title_cell.find('a')
+                if title_link:
+                    title_span = title_link.find('span')
+                    if title_span:
+                        title = title_span.get_text(strip=True)
 
-                    # "신규" 또는 "초급" 키워드 필터링
-                    if "신규" in title or "초급" in title:
-                        notices.append({
-                            'title': title,
-                            'link': link,
-                            'date': date
-                        })
-                        print(f"발견된 공지: {title}")
+                        # 링크 추출
+                        href = title_link.get('href', '')
+                        if href.startswith('./'):
+                            href = href[2:]  # ./ 제거
+                        link = f'https://www.jjss.or.kr/reserv/planweb/board/{href}'
 
-    session.close()  # 세션 정리
+                        # 날짜 추출
+                        date = cells[4].get_text(strip=True)
+
+                        # "신규" 또는 "초급" 키워드 필터링
+                        if "신규" in title or "초급" in title:
+                            notices.append({
+                                'title': title,
+                                'link': link,
+                                'date': date
+                            })
+                            print(f"✓ 발견된 공지 [{i + 1}]: {title}")
+                        else:
+                            print(f"  일반 공지 [{i + 1}]: {title}")
+            except Exception as e:
+                print(f"행 파싱 오류 [{i + 1}]: {e}")
+                continue
+
+    print(f"총 {len(notices)}개 신규/초급 공지 발견")
     return notices
 
 
 async def main():
+    start_time = datetime.now()
     try:
-        print("완산수영장 알림봇 시작...")
+        print("=" * 50)
+        print(f"완산수영장 알림봇 시작 - {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print("=" * 50)
 
-        current_notices = crawl_notices()
+        # ScraperAPI로 크롤링
+        current_notices = crawl_notices_with_scraperapi()
 
         # 이전 공지사항 데이터 로드
         try:
             with open('data/last_posts.json', 'r', encoding='utf-8') as f:
                 last_notices = json.load(f)
         except FileNotFoundError:
+            print("이전 데이터 없음. 새로 시작합니다.")
             last_notices = []
 
         # 새로운 공지사항 찾기
@@ -156,28 +149,42 @@ async def main():
         new_notices = [notice for notice in current_notices
                        if notice['title'] not in last_titles]
 
-        print(f"전체 공지: {len(current_notices)}개, 새 공지: {len(new_notices)}개")
+        print(f"전체 신규/초급 공지: {len(current_notices)}개")
+        print(f"새로운 공지: {len(new_notices)}개")
 
         # 새 공지사항이 있으면 텔레그램 전송
         if new_notices:
-            for notice in new_notices:
+            print("새 공지사항 텔레그램 전송 시작...")
+            for i, notice in enumerate(new_notices):
                 message = f"""
 🏊‍♀️ <b>완산수영장 신규/초급 공지</b>
 
 📋 <b>{notice['title']}</b>
 📅 등록일: {notice['date']}
 🔗 <a href="{notice['link']}">공지사항 보기</a>
+
+🤖 ScraperAPI를 통한 자동 알림
                 """.strip()
+
                 await send_telegram_message(message)
-                time.sleep(1)
+                print(f"  ✓ 전송 완료 [{i + 1}/{len(new_notices)}]: {notice['title']}")
+
+                if i < len(new_notices) - 1:  # 마지막이 아니면 대기
+                    time.sleep(2)
         else:
-            # 정상 작동 확인 메시지 (선택사항)
+            # 정상 작동 확인 메시지
+            end_time = datetime.now()
+            duration = (end_time - start_time).seconds
+
             success_message = f"""
 ✅ <b>완산수영장 알림봇 정상 작동</b>
 
 🔍 신규/초급 공지사항 {len(current_notices)}개 확인 완료
-📅 확인 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+⏱️ 실행시간: {duration}초
+📅 확인 시간: {end_time.strftime('%Y-%m-%d %H:%M:%S')}
 🔄 다음 확인: 2시간 후
+
+🌐 ScraperAPI 사용 (한국 IP)
             """.strip()
             await send_telegram_message(success_message)
 
@@ -186,14 +193,21 @@ async def main():
         with open('data/last_posts.json', 'w', encoding='utf-8') as f:
             json.dump(current_notices, f, ensure_ascii=False, indent=2)
 
+        print("=" * 50)
+        print("작업 완료!")
+        print("=" * 50)
+
     except Exception as e:
-        print(f"오류 발생: {e}")
+        print(f"❌ 오류 발생: {e}")
         error_message = f"""❌ 완산수영장 알림봇 오류 발생
 
-오류: 사이트 접근 실패
-시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🔧 ScraperAPI 사용 중 오류
+⚠️ 오류 내용: {str(e)[:150]}...
+📅 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-다음 실행 시 다시 시도됩니다."""
+🔄 다음 실행 시 다시 시도됩니다.
+💡 지속적 오류 시 GitHub Actions 로그를 확인하세요.
+        """.strip()
 
         await send_telegram_message(error_message, use_html=False)
 
