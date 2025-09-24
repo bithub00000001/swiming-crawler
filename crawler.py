@@ -2,15 +2,30 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import asyncio
 from telegram import Bot
 import time
+
+# 한국 시간대 설정
+KST = timezone(timedelta(hours=9))
 
 # GitHub Secrets에서 환경변수 가져오기
 BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 SCRAPER_API_KEY = os.environ['SCRAPER_API_KEY']
+
+
+def get_kst_time():
+    """한국 시간 반환"""
+    return datetime.now(KST)
+
+
+def format_kst_time(dt=None):
+    """한국 시간을 문자열로 포매팅"""
+    if dt is None:
+        dt = get_kst_time()
+    return dt.strftime('%Y-%m-%d %H:%M:%S KST')
 
 
 async def send_telegram_message(message, use_html=True):
@@ -185,10 +200,10 @@ def save_current_notices(notices):
 
 
 async def main():
-    start_time = datetime.now()
+    start_time = get_kst_time()
     try:
         print("=" * 60)
-        print(f"완산수영장 알림봇 시작 - {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"완산수영장 알림봇 시작 - {format_kst_time(start_time)}")
         print("=" * 60)
 
         # 1단계: 현재 모든 공지사항 가져오기
@@ -201,12 +216,12 @@ async def main():
         new_notices = find_new_notices(current_notices, last_notices)
 
         print("=" * 30)
-        print(f"📊 결과 요약:")
+        print("📊 결과 요약:")
         print(f"  전체 공지사항: {len(current_notices)}개")
         print(f"  새로운 게시글: {len(new_notices)}개")
         print("=" * 30)
 
-        # 4단계: 새로운 게시글이 있으면 모두 텔레그램 전송
+        # 4단계: 새로운 게시글이 있을 때만 텔레그램 전송
         if new_notices:
             print("🚨 새로운 공지사항 발견! 텔레그램 전송 시작...")
 
@@ -219,46 +234,38 @@ async def main():
 🔗 <a href="{notice['link']}">공지사항 보기</a>
 
 ✨ 새로 등록된 공지사항입니다!
-🤖 ScraperAPI 자동 모니터링
+🕐 알림 시간: {format_kst_time()}
+🤖 4시간마다 자동 모니터링
                 """.strip()
 
                 await send_telegram_message(message)
                 print(f"  ✅ 알림 전송 완료 [{i + 1}/{len(new_notices)}]: {notice['title']}")
 
                 if i < len(new_notices) - 1:
-                    time.sleep(2)  # 메시지 간 2초 간격
-
+                    time.sleep(3)  # 메시지 간 3초 간격
         else:
-            # 새로운 게시글이 없는 경우
-            end_time = datetime.now()
-            duration = (end_time - start_time).seconds
-
-            success_message = f"""
-✅ <b>완산수영장 알림봇 정상 작동</b>
-
-📋 전체 공지사항 {len(current_notices)}개 확인 완료
-🆕 새로운 게시글 없음
-⏱️ 실행시간: {duration}초
-📅 확인 시간: {end_time.strftime('%Y-%m-%d %H:%M:%S')}
-🔄 다음 확인: 2시간 후
-
-🌐 ScraperAPI 모니터링 중
-            """.strip()
-            await send_telegram_message(success_message)
+            # 새로운 게시글이 없을 때는 텔레그램 메시지 없이 조용히 완료
+            print("ℹ️ 새로운 게시글이 없습니다. 텔레그램 알림을 보내지 않습니다.")
 
         # 5단계: 현재 모든 공지사항 저장 (다음번 비교용)
         save_current_notices(current_notices)
 
+        end_time = get_kst_time()
+        duration = (end_time - start_time).total_seconds()
+
         print("=" * 60)
-        print("✅ 작업 완료!")
+        print(f"✅ 작업 완료! - {format_kst_time(end_time)}")
+        print(f"   처리시간: {duration:.1f}초")
+        print("   다음 실행: 4시간 후")
         print("=" * 60)
 
     except Exception as e:
         print(f"❌ 오류 발생: {e}")
+        # 오류 발생 시에만 텔레그램 메시지 전송
         error_message = f"""❌ 완산수영장 알림봇 오류 발생
 
 🔧 오류 내용: {str(e)[:150]}...
-📅 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🕐 발생 시간: {format_kst_time()}
 
 🔄 다음 실행 시 다시 시도됩니다.
         """.strip()
